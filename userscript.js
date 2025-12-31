@@ -1,231 +1,467 @@
 // ==UserScript==
 // @name         SSBAGPCM Client
-// @version      1.1.0
+// @version      1.2.0
 // @description  ssbagpcm's starblast client
 // @author       ssbagpcm
 // @match        https://starblast.io/
+// @run-at       document-start
 // @grant        none
 // ==/UserScript==
 
 (function() {
     'use strict';
 
+    // ================= SEQUENCER - WEBSOCKET INTERCEPT =================
+    const STORAGE_KEY = 'sb_seq_v26';
+    const MAX_LINES = 5;
+    let socket = null;
+    let running = false;
+    let looping = false;
+    let delay = 500;
+    let seqGui = null;
 
-    let popup = null;
-    let intervalId = null;
-    let isRunning = false;
-    let currentIndex = 0;
+    const OG = window.WebSocket;
+    window.WebSocket = function(a, b) {
+        const ws = b ? new OG(a, b) : new OG(a);
+        socket = ws;
+        return ws;
+    };
+    window.WebSocket.prototype = OG.prototype;
 
-    function createKeySequencePopup() {
-        if (popup) {
-            popup.style.display = popup.style.display === 'none' ? 'block' : 'none';
+    // ================= SEQUENCER GUI =================
+    function createSequencerGUI() {
+        if (seqGui) {
+            seqGui.classList.toggle('hide');
             return;
         }
 
-        const style = document.createElement('style');
-        style.textContent = `
-            #ks-popup {
-                position: fixed;
-                top: 100px;
-                left: 100px;
-                width: 280px;
-                background: rgba(30, 30, 30, 0.4);
-                backdrop-filter: blur(8px);
-                -webkit-backdrop-filter: blur(8px);
-                border-radius: 12px;
-                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                z-index: 2147483647;
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-                font-size: 13px;
-                color: rgba(255, 255, 255, 0.9);
-                user-select: none;
-            }
-            #ks-header {
-                padding: 14px 16px;
-                background: rgba(255, 255, 255, 0.05);
-                border-radius: 12px 12px 0 0;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-                cursor: move;
-                font-weight: 600;
-                font-size: 14px;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                letter-spacing: 0.3px;
-            }
-            #ks-header span {
-                opacity: 0.4;
-                font-size: 11px;
-                font-weight: normal;
-            }
-            #ks-body { padding: 16px; }
-            #ks-body label {
-                display: block;
-                margin-bottom: 6px;
-                font-size: 12px;
-                color: rgba(255, 255, 255, 0.6);
-                font-weight: 500;
-            }
-            #ks-body input[type="text"], #ks-body input[type="number"] {
-                width: 100%;
-                padding: 12px 14px;
-                margin-bottom: 14px;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 8px;
-                box-sizing: border-box;
-                font-size: 14px;
-                background: rgba(255, 255, 255, 0.08);
-                color: rgba(255, 255, 255, 0.95);
-            }
-            #ks-status {
-                text-align: center;
-                padding: 12px;
-                background: rgba(255, 255, 255, 0.05);
-                border-radius: 8px;
-                margin-bottom: 14px;
-                font-weight: 500;
-                font-size: 13px;
-                color: rgba(255, 255, 255, 0.7);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-            }
-            #ks-status.running { background: rgba(255, 255, 255, 0.1); color: rgba(255, 255, 255, 0.95); }
-            #ks-buttons { display: flex; gap: 10px; }
-            #ks-buttons button {
-                flex: 1;
-                padding: 12px 0;
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 8px;
-                cursor: pointer;
-                font-size: 12px;
-                font-weight: 600;
-                text-transform: uppercase;
-                background: rgba(255, 255, 255, 0.08);
-                color: rgba(255, 255, 255, 0.85);
-                transition: all 0.2s;
-            }
-            #ks-buttons button:hover { background: rgba(255, 255, 255, 0.15); }
-        `;
-        document.head.appendChild(style);
-
-        popup = document.createElement('div');
-        popup.id = 'ks-popup';
-        popup.innerHTML = `
-            <div id="ks-header">Key Sequence <span>Alt+N to toggle</span></div>
-            <div id="ks-body">
-                <label>Letters</label>
-                <input type="text" id="ks-sequence" placeholder="abc" autocomplete="off" spellcheck="false" />
-                <label>Interval (ms)</label>
-                <input type="number" id="ks-interval" value="1000" min="50" step="50" />
-                <div id="ks-status" class="stopped">Stopped</div>
-                <div id="ks-buttons">
-                    <button id="ks-start">Start</button>
-                    <button id="ks-stop">Stop</button>
+        seqGui = document.createElement('div');
+        seqGui.id = 'sbseq';
+        seqGui.innerHTML = `
+            <div id="seq-head">SEQUENCER
+                <div id="seq-btns">
+                    <button id="seq-min">-</button>
+                    <button id="seq-close">x</button>
                 </div>
+            </div>
+            <div id="seq-body">
+                <div id="seq-lines"></div>
+                <div id="seq-delay">
+                    <div id="seq-track"><div id="seq-fill"></div><div id="seq-thumb"></div></div>
+                    <span id="seq-val">500ms</span>
+                </div>
+                <div id="seq-controls">
+                    <button id="seq-start">START</button>
+                    <button id="seq-stop">STOP</button>
+                </div>
+                <label id="seq-loop">
+                    <input type="checkbox" id="seq-loopchk">
+                    <div id="seq-switch"><div id="seq-knob"></div></div>
+                    <span>Infinite Loop</span>
+                </label>
             </div>
         `;
 
-        document.body.appendChild(popup);
-        makeDraggable();
-        setupKeyEvents();
-        updateStatusDisplay();
+        const css = document.createElement('style');
+        css.textContent = `
+            #sbseq{position:fixed;top:70px;left:50px;width:370px;background:rgba(10,10,18,0.78);backdrop-filter:blur(32px);border:1px solid rgba(255,255,255,0.08);border-radius:20px;font-family:system-ui,sans-serif;color:#fff;box-shadow:0 30px 80px rgba(0,0,0,0.7);z-index:999999;user-select:none;overflow:hidden}
+            #sbseq.min #seq-body{display:none}#sbseq.hide{opacity:0;pointer-events:none;transform:scale(0.92);transition:all .25s}
+            #seq-head{padding:14px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,0.06);cursor:grab;font-size:11px;letter-spacing:2.5px;color:rgba(255,255,255,0.5);font-weight:600}
+            #seq-head:active{cursor:grabbing}
+            #seq-btns button{background:none;border:none;color:rgba(255,255,255,0.5);font-size:20px;width:30px;height:30px;border-radius:8px;cursor:pointer;transition:all .2s}
+            #seq-btns button:hover{background:rgba(255,255,255,0.15);color:#fff}
+            #seq-body{padding:20px 22px;display:flex;flex-direction:column;gap:18px}
+            #seq-lines{display:flex;flex-direction:column;gap:12px;max-height:340px;overflow-y:auto}
+            .seq-line{display:flex;gap:10px;justify-content:center}
+            .seq-char{width:50px;height:50px;border:1px solid rgba(255,255,255,0.1);border-radius:12px;background:rgba(0,0,0,0.4);color:#fff;text-align:center;font-size:20px;font-weight:600;outline:none;transition:all .2s;text-transform:uppercase;caret-color:transparent}
+            .seq-char::placeholder{color:rgba(255,255,255,0.2)}
+            .seq-char:focus{border-color:rgba(100,220,160,0.7);background:rgba(0,0,0,0.55);box-shadow:0 0 0 4px rgba(100,220,160,0.18)}
+            .seq-char.space{background:rgba(100,220,160,0.2) !important;border-color:rgba(100,220,160,0.5) !important;box-shadow:inset 0 0 15px rgba(100,220,160,0.15) !important}
+            .seq-line.active .seq-char{border-color:rgba(100,220,160,0.9);box-shadow:0 0 0 4px rgba(100,220,160,0.25)}
+            #seq-delay{display:flex;align-items:center;gap:16px;padding:14px 18px;background:rgba(255,255,255,0.02);border-radius:14px;border:1px solid rgba(255,255,255,0.05)}
+            #seq-track{flex:1;height:7px;background:rgba(255,255,255,0.08);border-radius:4px;position:relative;cursor:pointer}
+            #seq-fill{height:100%;width:26%;background:linear-gradient(90deg,rgba(100,220,160,0.6),rgba(100,220,160,1));border-radius:4px}
+            #seq-thumb{position:absolute;top:50%;left:26%;width:18px;height:18px;background:#fff;border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 3px 12px rgba(0,0,0,0.5)}
+            #seq-val{font-size:12px;color:rgba(255,255,255,0.6);min-width:56px;text-align:right;font-variant-numeric:tabular-nums}
+            #seq-controls{display:flex;gap:12px}
+            #seq-controls button{flex:1;padding:16px 0;border:none;border-radius:14px;font-weight:600;letter-spacing:0.6px;cursor:pointer;transition:all .25s}
+            #seq-start{background:linear-gradient(135deg,rgba(80,200,140,0.9),rgba(60,170,110,0.9));color:#fff}
+            #seq-stop{background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.7);border:1px solid rgba(255,255,255,0.1)}
+            #seq-loop{display:flex;align-items:center;justify-content:center;gap:16px;padding:14px 28px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:40px;cursor:pointer}
+            #seq-loop input{display:none}
+            #seq-switch{width:52px;height:30px;background:rgba(255,255,255,0.1);border-radius:15px;position:relative}
+            #seq-knob{position:absolute;top:3px;left:3px;width:24px;height:24px;background:#fff;border-radius:50%;transition:.3s cubic-bezier(.4,0,.2,1);box-shadow:0 3px 10px rgba(0,0,0,0.3)}
+            #seq-loopchk:checked~#seq-switch{background:rgba(100,220,160,0.6)}
+            #seq-loopchk:checked~#seq-switch #seq-knob{left:25px}
+        `;
+        document.head.appendChild(css);
+        document.body.appendChild(seqGui);
+
+        initSequencer();
     }
 
-    function makeDraggable() {
-        const header = document.getElementById('ks-header');
-        let isDragging = false, offsetX, offsetY;
-        header.addEventListener('mousedown', (e) => {
-            isDragging = true;
-            offsetX = e.clientX - popup.offsetLeft;
-            offsetY = e.clientY - popup.offsetTop;
-        });
-        document.addEventListener('mousemove', (e) => {
-            if (!isDragging) return;
-            popup.style.left = (e.clientX - offsetX) + 'px';
-            popup.style.top = (e.clientY - offsetY) + 'px';
-        });
-        document.addEventListener('mouseup', () => isDragging = false);
-    }
+    function initSequencer() {
+        const gui = seqGui;
+        const linesCont = gui.querySelector('#seq-lines');
 
-    function setupKeyEvents() {
-        document.getElementById('ks-start').addEventListener('click', startSequence);
-        document.getElementById('ks-stop').addEventListener('click', stopSequence);
-        const inputs = popup.querySelectorAll('input');
-        inputs.forEach(input => {
-            ['keydown', 'keyup', 'keypress'].forEach(event => {
-                input.addEventListener(event, (e) => e.stopPropagation());
-            });
-        });
-        document.getElementById('ks-sequence').addEventListener('input', (e) => {
-            e.target.value = e.target.value.replace(/[^a-zA-Z]/g, '');
-        });
-    }
-
-    function updateStatusDisplay() {
-        const status = document.getElementById('ks-status');
-        if (!status) return;
-        if (isRunning) {
-            status.className = 'running';
-        } else {
-            status.textContent = 'Stopped';
-            status.className = 'stopped';
-        }
-    }
-
-    function sendKey(key) {
-        const target = document.querySelector('canvas') || document.body;
-        const keyCode = key.toUpperCase().charCodeAt(0);
-        ['keydown', 'keyup'].forEach(type => {
-            target.dispatchEvent(new KeyboardEvent(type, {
-                key: key.toLowerCase(),
-                code: 'Key' + key.toUpperCase(),
-                keyCode: keyCode,
-                which: keyCode,
-                bubbles: true,
-                cancelable: true
-            }));
-        });
-    }
-
-    function startSequence() {
-        if (isRunning) return;
-        const sequence = document.getElementById('ks-sequence').value.replace(/[^a-zA-Z]/g, '');
-        const interval = parseInt(document.getElementById('ks-interval').value) || 1000;
-        const status = document.getElementById('ks-status');
-
-        if (sequence.length === 0) {
-            status.textContent = 'No letters';
-            status.className = 'stopped';
-            return;
+        function createChar() {
+            const i = document.createElement('input');
+            i.type = 'text';
+            i.maxLength = 1;
+            i.className = 'seq-char';
+            i.placeholder = '-';
+            i.dataset.space = 'false';
+            return i;
         }
 
-        isRunning = true;
-        currentIndex = 0;
-        intervalId = setInterval(() => {
-            const key = sequence[currentIndex];
-            sendKey(key);
-            const statusBox = document.getElementById('ks-status');
-            if (statusBox) {
-                statusBox.textContent = 'Sending: ' + key.toUpperCase();
-                statusBox.className = 'running';
+        function isExplicitSpace(input) {
+            return input.dataset.space === 'true';
+        }
+
+        function setExplicitSpace(input) {
+            input.value = '';
+            input.dataset.space = 'true';
+            input.classList.add('space');
+            input.placeholder = '';
+        }
+
+        function clearChar(input) {
+            input.value = '';
+            input.dataset.space = 'false';
+            input.classList.remove('space');
+            input.placeholder = '-';
+        }
+
+        function getCharValue(input) {
+            if (isExplicitSpace(input)) return ' ';
+            return input.value;
+        }
+
+        function addLine() {
+            if (linesCont.children.length >= MAX_LINES) return false;
+            const line = document.createElement('div');
+            line.className = 'seq-line';
+            for (let i = 0; i < 5; i++) line.appendChild(createChar());
+            linesCont.appendChild(line);
+            line.querySelector('.seq-char').focus();
+            save();
+            return true;
+        }
+
+        function save() {
+            const data = {
+                lines: [...linesCont.children].map(l =>
+                    [...l.querySelectorAll('.seq-char')].map(i => ({
+                        value: i.value,
+                        isSpace: isExplicitSpace(i)
+                    }))
+                ),
+                delay,
+                loop: gui.querySelector('#seq-loopchk').checked
+            };
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        }
+
+        function load() {
+            try {
+                const d = JSON.parse(localStorage.getItem(STORAGE_KEY));
+                if (!d || !d.lines?.length) throw new Error();
+
+                linesCont.innerHTML = '';
+                const linesToLoad = d.lines.slice(0, MAX_LINES);
+
+                linesToLoad.forEach(row => {
+                    const line = document.createElement('div');
+                    line.className = 'seq-line';
+                    const cleanRow = row.slice(0, 5);
+
+                    cleanRow.forEach(cell => {
+                        const inp = createChar();
+                        if (typeof cell === 'object') {
+                            if (cell.isSpace) {
+                                setExplicitSpace(inp);
+                            } else {
+                                inp.value = (cell.value || '').replace(/[^a-zA-Z]/g, '').toUpperCase();
+                            }
+                        } else {
+                            inp.value = (cell || '').replace(/[^a-zA-Z]/g, '').toUpperCase();
+                        }
+                        line.appendChild(inp);
+                    });
+
+                    while (line.children.length < 5) line.appendChild(createChar());
+                    linesCont.appendChild(line);
+                });
+
+                while (linesCont.children.length < MAX_LINES) addLine();
+
+                delay = d.delay || 500;
+                gui.querySelector('#seq-loopchk').checked = !!d.loop;
+                updateDelay();
+            } catch {
+                linesCont.innerHTML = '';
+                for (let i = 0; i < MAX_LINES; i++) addLine();
             }
-            currentIndex = (currentIndex + 1) % sequence.length;
-        }, interval);
-        updateStatusDisplay();
+        }
+
+        function updateDelay() {
+            const pct = ((delay - 100) / 1900) * 100;
+            gui.querySelector('#seq-fill').style.width = pct + '%';
+            gui.querySelector('#seq-thumb').style.left = pct + '%';
+            gui.querySelector('#seq-val').textContent = delay + 'ms';
+        }
+
+        function stopSeq() {
+            running = false;
+            document.querySelectorAll('.seq-line.active').forEach(l => l.classList.remove('active'));
+        }
+
+        function buildMessage(line) {
+            const chars = line.querySelectorAll('.seq-char');
+            let msg = '';
+            chars.forEach(c => {
+                const val = getCharValue(c);
+                if (val) msg += val;
+            });
+            return msg;
+        }
+
+        function isLineEmpty(line) {
+            const chars = line.querySelectorAll('.seq-char');
+            for (let c of chars) {
+                if (c.value || isExplicitSpace(c)) return false;
+            }
+            return true;
+        }
+
+        async function runSeq() {
+            if (!socket || socket.readyState !== 1) {
+                stopSeq();
+                return;
+            }
+
+            const lines = linesCont.children;
+
+            for (let i = 0; i < lines.length; i++) {
+                if (!running) break;
+
+                if (isLineEmpty(lines[i])) continue;
+
+                lines[i].classList.add('active');
+
+                const msg = buildMessage(lines[i]);
+
+                if (msg.length > 0) {
+                    socket.send(JSON.stringify({ name: 'say', data: msg }));
+                }
+
+                await new Promise(r => setTimeout(r, delay));
+                lines[i].classList.remove('active');
+            }
+
+            if (running && looping) {
+                runSeq();
+            } else {
+                stopSeq();
+            }
+        }
+
+        document.addEventListener('keydown', e => {
+            if (!e.target.matches('.seq-char')) return;
+
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+
+            const input = e.target;
+            const line = input.parentNode;
+            const chars = Array.from(line.querySelectorAll('.seq-char'));
+            const index = chars.indexOf(input);
+            const allLines = Array.from(linesCont.children);
+            const lineIdx = allLines.indexOf(line);
+
+            if (e.key === ' ') {
+                e.preventDefault();
+                setExplicitSpace(input);
+                const next = input.nextElementSibling || line.nextElementSibling?.firstElementChild;
+                next?.focus();
+                save();
+                return;
+            }
+
+            if (e.key === 'Delete') {
+                e.preventDefault();
+                clearChar(input);
+                let nextFocus = null;
+                if (index > 0) nextFocus = chars[index - 1];
+                else if (index < chars.length - 1) nextFocus = chars[index + 1];
+                else if (lineIdx > 0) nextFocus = allLines[lineIdx - 1].lastElementChild;
+                else if (lineIdx < allLines.length - 1) nextFocus = allLines[lineIdx + 1].firstElementChild;
+                nextFocus?.focus();
+                save();
+                return;
+            }
+
+            if (e.key === 'Backspace') {
+                e.preventDefault();
+                if (input.value || isExplicitSpace(input)) {
+                    clearChar(input);
+                } else if (index > 0) {
+                    chars[index - 1].focus();
+                    clearChar(chars[index - 1]);
+                } else if (lineIdx > 0) {
+                    allLines[lineIdx - 1].lastElementChild.focus();
+                }
+                save();
+                return;
+            }
+
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                return;
+            }
+
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                input.blur();
+                return;
+            }
+
+            if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Tab'].includes(e.key)) {
+                e.preventDefault();
+
+                switch (e.key) {
+                    case 'Tab':
+                        const nextTab = e.shiftKey
+                            ? (input.previousElementSibling || (lineIdx > 0 ? allLines[lineIdx - 1].lastElementChild : null))
+                            : (input.nextElementSibling || line.nextElementSibling?.firstElementChild);
+                        nextTab?.focus();
+                        break;
+                    case 'ArrowRight':
+                        if (index < chars.length - 1) chars[index + 1].focus();
+                        else if (lineIdx < allLines.length - 1) allLines[lineIdx + 1].children[0].focus();
+                        break;
+                    case 'ArrowLeft':
+                        if (index > 0) chars[index - 1].focus();
+                        else if (lineIdx > 0) allLines[lineIdx - 1].lastElementChild?.focus();
+                        break;
+                    case 'ArrowDown':
+                        if (lineIdx < allLines.length - 1) {
+                            const next = allLines[lineIdx + 1].children;
+                            next[Math.min(index, next.length - 1)].focus();
+                        }
+                        break;
+                    case 'ArrowUp':
+                        if (lineIdx > 0) {
+                            const prev = allLines[lineIdx - 1].children;
+                            prev[Math.min(index, prev.length - 1)].focus();
+                        }
+                        break;
+                }
+                return;
+            }
+
+            if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                if (/^[a-zA-Z]$/.test(e.key)) {
+                    input.dataset.space = 'false';
+                    input.classList.remove('space');
+                    input.placeholder = '-';
+                } else {
+                    e.preventDefault();
+                }
+            }
+        }, true);
+
+        document.addEventListener('input', e => {
+            if (!e.target.matches('.seq-char')) return;
+
+            const input = e.target;
+
+            input.dataset.space = 'false';
+            input.classList.remove('space');
+            input.placeholder = '-';
+
+            input.value = input.value.replace(/[^a-zA-Z]/g, '').toUpperCase();
+
+            if (input.value.length === 1) {
+                const next = input.nextElementSibling || input.parentElement.nextElementSibling?.firstElementChild;
+                next?.focus();
+            }
+
+            save();
+        });
+
+        document.addEventListener('keyup', e => {
+            if (e.target.matches('.seq-char')) {
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+            }
+        }, true);
+
+        document.addEventListener('keypress', e => {
+            if (e.target.matches('.seq-char')) {
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+            }
+        }, true);
+
+        let sliding = false;
+        gui.querySelector('#seq-track').addEventListener('mousedown', e => { sliding = true; moveSlider(e); });
+        document.addEventListener('mousemove', e => sliding && moveSlider(e));
+        document.addEventListener('mouseup', () => sliding && (sliding = false, save()));
+
+        function moveSlider(e) {
+            const rect = gui.querySelector('#seq-track').getBoundingClientRect();
+            let p = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+            delay = Math.round((100 + p * 1900) / 50) * 50;
+            updateDelay();
+        }
+
+        let dragging = false, ox, oy;
+        gui.querySelector('#seq-head').addEventListener('mousedown', e => {
+            if (e.target.tagName === 'BUTTON') return;
+            dragging = true;
+            const r = gui.getBoundingClientRect();
+            ox = e.clientX - r.left;
+            oy = e.clientY - r.top;
+        });
+        document.addEventListener('mousemove', e => {
+            if (dragging) {
+                gui.style.left = (e.clientX - ox) + 'px';
+                gui.style.top = (e.clientY - oy) + 'px';
+            }
+        });
+        document.addEventListener('mouseup', () => dragging = false);
+
+        gui.querySelector('#seq-start').onclick = () => {
+            if (running) return;
+            running = true;
+            looping = gui.querySelector('#seq-loopchk').checked;
+            runSeq();
+        };
+
+        gui.querySelector('#seq-stop').onclick = stopSeq;
+
+        gui.querySelector('#seq-min').onclick = () => {
+            gui.classList.toggle('min');
+            gui.querySelector('#seq-min').textContent = gui.classList.contains('min') ? '+' : '-';
+        };
+
+        gui.querySelector('#seq-close').onclick = () => gui.classList.toggle('hide');
+        gui.querySelector('#seq-loopchk').addEventListener('change', save);
+
+        updateDelay();
+        load();
     }
 
-    function stopSequence() {
-        if (intervalId) { clearInterval(intervalId); intervalId = null; }
-        isRunning = false;
-        currentIndex = 0;
-        updateStatusDisplay();
+    function toggleSequencer() {
+        if (!seqGui) {
+            createSequencerGUI();
+        } else {
+            seqGui.classList.toggle('hide');
+        }
     }
 
-    function toggleKeyPopup() {
-        if (!popup) createKeySequencePopup();
-        else popup.style.display = (popup.style.display === 'none' ? 'block' : 'none');
-    }
-
+    // ================= CLIENT CORE =================
 
     if (localStorage.getItem('emopacity') === null) localStorage.setItem('emopacity', '5');
     if (localStorage.getItem('gemindeed') === null) localStorage.setItem('gemindeed', JSON.stringify('#ff0000'));
@@ -429,7 +665,8 @@
 
                 document.addEventListener('keydown', (e) => {
                     if (e.ctrlKey && e.key.toLowerCase() === 's') { e.preventDefault(); openSettings(); }
-                    if (e.altKey && e.key.toLowerCase() === 'n') { e.preventDefault(); e.stopPropagation(); toggleKeyPopup(); }
+                    if (e.altKey && e.key.toLowerCase() === 'n') { e.preventDefault(); e.stopPropagation(); toggleSequencer(); }
+                    if (e.ctrlKey && e.altKey && e.key.toLowerCase() === 'p') { e.preventDefault(); toggleSequencer(); }
                 }, true);
 
                 const emoteInt = setInterval(() => {
@@ -439,7 +676,7 @@
                     }
                 }, 100);
 
-                console.log('SSBAGPCM Client & Key Sequence Loaded. Alt+N for Key Sequence Menu.');
+                console.log('SSBAGPCM Client Loaded. Alt+N or Ctrl+Alt+P for Sequencer.');
 
             } catch (err) { console.error('[ssbagpcm] Error:', err); }
         };
