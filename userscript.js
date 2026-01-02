@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         SSBAGPCM Client
-// @version      1.2.0
+// @version      1.2.1
 // @description  ssbagpcm's starblast client
 // @author       ssbagpcm
 // @match        https://starblast.io/
@@ -10,6 +10,10 @@
 
 (function() {
     'use strict';
+
+    // ================= ANTI-RELOAD PROTECTION =================
+    if (window.__SSBAGPCM_LOADED__) return;
+    window.__SSBAGPCM_LOADED__ = true;
 
     // ================= SEQUENCER - WEBSOCKET INTERCEPT =================
     const STORAGE_KEY = 'sb_seq_v26';
@@ -63,6 +67,7 @@
         `;
 
         const css = document.createElement('style');
+        css.id = 'sbseq-style';
         css.textContent = `
             #sbseq{position:fixed;top:70px;left:50px;width:370px;background:rgba(10,10,18,0.78);backdrop-filter:blur(32px);border:1px solid rgba(255,255,255,0.08);border-radius:20px;font-family:system-ui,sans-serif;color:#fff;box-shadow:0 30px 80px rgba(0,0,0,0.7);z-index:999999;user-select:none;overflow:hidden}
             #sbseq.min #seq-body{display:none}#sbseq.hide{opacity:0;pointer-events:none;transform:scale(0.92);transition:all .25s}
@@ -94,6 +99,13 @@
             #seq-loopchk:checked~#seq-switch{background:rgba(100,220,160,0.6)}
             #seq-loopchk:checked~#seq-switch #seq-knob{left:25px}
         `;
+
+        // Clean up existing elements first
+        const existingStyle = document.getElementById('sbseq-style');
+        const existingGui = document.getElementById('sbseq');
+        if (existingStyle) existingStyle.remove();
+        if (existingGui) existingGui.remove();
+
         document.head.appendChild(css);
         document.body.appendChild(seqGui);
 
@@ -555,6 +567,17 @@
         return false;
     }
 
+    // Store interval IDs for cleanup
+    let patchUIInterval = null;
+    let gemPatchInterval = null;
+    let emotePatchInterval = null;
+
+    function cleanupIntervals() {
+        if (patchUIInterval) { clearInterval(patchUIInterval); patchUIInterval = null; }
+        if (gemPatchInterval) { clearInterval(gemPatchInterval); gemPatchInterval = null; }
+        if (emotePatchInterval) { clearInterval(emotePatchInterval); emotePatchInterval = null; }
+    }
+
     function patchUI() {
         const logo = document.getElementById('logo');
         if (logo && !logo.dataset.ssbagpcmDone) {
@@ -563,9 +586,12 @@
                 <div style="font-weight:900; letter-spacing:0.10em; text-transform:uppercase; font-size: clamp(60px, 6.2vw, 140px); line-height:1; text-shadow: 0 2px 0 rgba(255,255,255,0.12), 0 22px 36px rgba(0,0,0,0.92);">SSBAGPCM</div>
                 <div style="margin-top: 6px; font-weight:800; letter-spacing:0.22em; text-transform:uppercase; font-size: clamp(16px, 1.8vw, 30px); opacity:0.92;">Client</div>
             </a>`;
-            document.getElementById('ssbagpcm-brand-link').addEventListener('click', (e) => {
-                e.preventDefault(); showThanksScreen(); setTimeout(() => { window.location.href = GITHUB_URL; }, 0);
-            });
+            const brandLink = document.getElementById('ssbagpcm-brand-link');
+            if (brandLink) {
+                brandLink.addEventListener('click', (e) => {
+                    e.preventDefault(); showThanksScreen(); setTimeout(() => { window.location.href = GITHUB_URL; }, 0);
+                });
+            }
         }
 
         ['training', 'facebook', 'twitter'].forEach(id => {
@@ -578,9 +604,12 @@
             community.dataset.ssbagpcmShipyard = '1';
             community.style.display = 'flex'; community.style.justifyContent = 'center';
             community.innerHTML = `<a id="ssbagpcm-shipyard-btn" href="${SHIPYARD_URL}" style="text-decoration:none; color:#fff; font-weight:900; font-size:18px; letter-spacing:0.14em; text-transform:uppercase; padding:10px 0;">Shipyard</a>`;
-            document.getElementById('ssbagpcm-shipyard-btn').addEventListener('click', (e) => {
-                e.preventDefault(); showThanksScreen(); setTimeout(() => { window.location.href = SHIPYARD_URL; }, 0);
-            });
+            const shipyardBtn = document.getElementById('ssbagpcm-shipyard-btn');
+            if (shipyardBtn) {
+                shipyardBtn.addEventListener('click', (e) => {
+                    e.preventDefault(); showThanksScreen(); setTimeout(() => { window.location.href = SHIPYARD_URL; }, 0);
+                });
+            }
         }
     }
 
@@ -595,7 +624,8 @@
     }
 
     function installGemRuntimePatch() {
-        const t = setInterval(() => {
+        if (gemPatchInterval) clearInterval(gemPatchInterval);
+        gemPatchInterval = setInterval(() => {
             let CrystalObject = null;
             for (const k in window) {
                 try {
@@ -606,7 +636,8 @@
                 } catch (_) {}
             }
             if (!CrystalObject) return;
-            clearInterval(t);
+            clearInterval(gemPatchInterval);
+            gemPatchInterval = null;
             const old = CrystalObject.prototype.getModelInstance;
             CrystalObject.prototype.getModelInstance = function () {
                 const res = old.apply(this, arguments);
@@ -621,6 +652,12 @@
     }
 
     async function ClientLoader() {
+        // Check if already loaded by looking for our marker in the DOM
+        if (document.querySelector('[data-ssbagpcm-loaded="true"]')) {
+            console.log('[SSBAGPCM] Client already loaded, skipping reload.');
+            return;
+        }
+
         renderFullscreenScreen('SSBAGPCM CLIENT', 'Loading...');
         window.addEventListener('beforeunload', () => { try { showThanksScreen(); } catch (_) {} });
 
@@ -631,6 +668,9 @@
             try {
                 let src = xhr.responseText;
                 if (!src) return;
+
+                // Add marker to prevent reload issues
+                src = src.replace('<head>', '<head><meta data-ssbagpcm-loaded="true">');
 
                 src = src.replace(/\.toUpperCase\(\)/g, '');
                 src = src.replace(/text-transform:\s*uppercase;/gim, '');
@@ -659,7 +699,10 @@
                 document.write(src);
                 document.close();
 
-                setInterval(patchUI, 100);
+                // Clean up old intervals before creating new ones
+                cleanupIntervals();
+
+                patchUIInterval = setInterval(patchUI, 100);
                 installTabIndicator();
                 installGemRuntimePatch();
 
@@ -669,9 +712,11 @@
                     if (e.ctrlKey && e.altKey && e.key.toLowerCase() === 'p') { e.preventDefault(); toggleSequencer(); }
                 }, true);
 
-                const emoteInt = setInterval(() => {
+                if (emotePatchInterval) clearInterval(emotePatchInterval);
+                emotePatchInterval = setInterval(() => {
                     if (window.ChatPanel && window.ChatPanel.prototype.typed) {
-                        clearInterval(emoteInt);
+                        clearInterval(emotePatchInterval);
+                        emotePatchInterval = null;
                         window.ChatPanel.prototype.typed = new Function('return ' + window.ChatPanel.prototype.typed.toString().replace('>=4', '>=ClientStorage.emotes()'))();
                     }
                 }, 100);
@@ -684,7 +729,10 @@
     }
 
     if (window.location.pathname === '/') {
-        setTimeout(ClientLoader, 1);
+        // Additional check to prevent multiple loads
+        if (!document.querySelector('[data-ssbagpcm-loaded="true"]')) {
+            setTimeout(ClientLoader, 1);
+        }
     }
 
 })();
