@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         SSBAGPCM Client
-// @version      1.3.1
+// @version      1.0
 // @description  ssbagpcm's starblast client
 // @author       ssbagpcm
 // @match        https://starblast.io/
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==
+
+// FIRST BETA RELEASE 🎉🎉🎉
 
 (function() {
     'use strict';
@@ -15,24 +17,10 @@
     const earlyCSS = document.createElement('style');
     earlyCSS.id = 'ssbagpcm-early';
     earlyCSS.textContent = `
-        /* Hide original logo IMAGE but keep the container for positioning */
-        #logo > img, #logo > canvas, #logo > svg {
-            display: none !important;
-        }
-        /* Hide logo until we patch it */
-        #logo:not([data-patched]) {
-            visibility: hidden !important;
-        }
-        /* Show once patched */
-        #logo[data-patched] {
-            visibility: visible !important;
-            opacity: 1 !important;
-        }
-        /* Hide unwanted elements */
-        #training, #facebook, #twitter,
-        .social .sbg-training, .social .sbg-facebook, .social .sbg-twitter {
-            display: none !important;
-        }
+        #logo > img, #logo > canvas, #logo > svg { display: none !important; }
+        #logo:not([data-patched]) { visibility: hidden !important; }
+        #logo[data-patched] { visibility: visible !important; opacity: 1 !important; }
+        #training, #facebook, #twitter, .social .sbg-training, .social .sbg-facebook, .social .sbg-twitter { display: none !important; }
     `;
     (document.head || document.documentElement).appendChild(earlyCSS);
 
@@ -88,6 +76,220 @@
         gem2() { return this._readString('gemindeed1', '#ff8080'); }
     })();
 
+    // ================= FREECAM =================
+    const Freecam = (function() {
+        const R = 90, Zmin = 0.9, Zmax = 3, Zdef = 1.6, Zs = 0.1;
+        let Z = Zdef, Zt = Zdef, on = false, ox = 0, oy = 0, drag = false, dx = 0, dy = 0;
+        let indicator = null;
+
+        const inGame = () => /^#\d+$/.test(location.hash);
+        const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+        const limit = () => { let d = Math.sqrt(ox * ox + oy * oy); if (d > R) { ox *= R / d; oy *= R / d; } };
+
+        // Indicator UI - Same style as sequencer
+        function createIndicator() {
+            if (indicator) return;
+            indicator = document.createElement('div');
+            indicator.id = 'freecam-indicator';
+            indicator.innerHTML = `
+                <span class="fc-text">FREECAM</span>
+                <span class="fc-key">I</span>
+            `;
+
+            const style = document.createElement('style');
+            style.id = 'freecam-style';
+            style.textContent = `
+                #freecam-indicator {
+                    position: fixed;
+                    top: 20px;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    display: none;
+                    align-items: center;
+                    gap: 14px;
+                    padding: 14px 24px;
+                    background: rgba(10, 10, 18, 0.78);
+                    backdrop-filter: blur(32px);
+                    -webkit-backdrop-filter: blur(32px);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 14px;
+                    font-family: system-ui, -apple-system, sans-serif;
+                    color: #fff;
+                    z-index: 999998;
+                    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7);
+                    user-select: none;
+                }
+                #freecam-indicator.active {
+                    display: flex;
+                    animation: fc-fadein 0.25s ease;
+                }
+                @keyframes fc-fadein {
+                    from { opacity: 0; transform: translateX(-50%) translateY(-10px) scale(0.92); }
+                    to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+                }
+                .fc-text {
+                    font-weight: 600;
+                    font-size: 11px;
+                    letter-spacing: 2.5px;
+                    color: rgba(255, 255, 255, 0.5);
+                }
+                .fc-key {
+                    padding: 6px 12px;
+                    background: rgba(255, 255, 255, 0.05);
+                    border: 1px solid rgba(255, 255, 255, 0.1);
+                    border-radius: 8px;
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: rgba(255, 255, 255, 0.7);
+                }
+            `;
+
+            document.getElementById('freecam-style')?.remove();
+            document.getElementById('freecam-indicator')?.remove();
+            document.head.appendChild(style);
+            document.body.appendChild(indicator);
+        }
+
+        function updateIndicator() {
+            if (!indicator) createIndicator();
+            if (on) {
+                indicator.classList.add('active');
+            } else {
+                indicator.classList.remove('active');
+            }
+        }
+
+        // Force hide cursor
+        const setCursor = (hide) => {
+            let s = document.getElementById('fc-hide');
+            if (hide && !s) {
+                s = document.createElement('style');
+                s.id = 'fc-hide';
+                s.textContent = `#canvaswrapper canvas { cursor: none !important; }`;
+                document.head.appendChild(s);
+            } else if (!hide && s) {
+                s.remove();
+            }
+            try {
+                const paths = [
+                    window.game?.display?.screen?.l0lII?.cursor,
+                    Object.values(window).find(o => o?.display?.screen?.l0lII)?.display?.screen?.l0lII?.cursor
+                ];
+                for (let c of paths) if (c) c.visible = !hide;
+                for (let c of paths) if (c?.set) c.set(-9999, -9999);
+            } catch (e) {}
+        };
+
+        // Smooth zoom
+        const zoomLoop = () => {
+            Z += (Zt - Z) * Zs;
+            if (Math.abs(Zt - Z) > 0.001) requestAnimationFrame(zoomLoop);
+        };
+
+        // Hook camera
+        function hookCamera() {
+            if (typeof THREE === 'undefined') return setTimeout(hookCamera, 200);
+            const orig = THREE.PerspectiveCamera.prototype.updateProjectionMatrix;
+            THREE.PerspectiveCamera.prototype.updateProjectionMatrix = function() {
+                if (this.position?.z > 50 && this.position.z < 150) {
+                    if (!this._bz) this._bz = this.fov;
+                    if (on) {
+                        this.fov = clamp(this._bz / Z, 10, 90);
+                        if (!this._bp) this._bp = { x: this.position.x, y: this.position.y };
+                        this.position.x = this._bp.x + ox;
+                        this.position.y = this._bp.y + oy;
+                    } else {
+                        this._bp = null;
+                    }
+                }
+                return orig.call(this);
+            };
+        }
+
+        // Toggle
+        function toggle() {
+            on = !on;
+            if (!on) { ox = oy = 0; Zt = Z = Zdef; }
+            setCursor(on);
+            updateIndicator();
+        }
+
+        // Init events
+        function init() {
+            hookCamera();
+
+            // Wheel = zoom
+            window.addEventListener('wheel', e => {
+                if (!inGame() || !on) return;
+                e.preventDefault(); e.stopPropagation();
+                Zt = clamp(Zt + (e.deltaY > 0 ? -0.08 : 0.08), Zmin, Zmax);
+                requestAnimationFrame(zoomLoop);
+            }, { passive: false, capture: true });
+
+            // I key toggle (changed from U)
+            window.addEventListener('keydown', e => {
+                if (!inGame() || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+                if (e.key.toLowerCase() === 'i') {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    toggle();
+                }
+                if (on && !e.ctrlKey && !e.altKey) {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                }
+            }, true);
+
+            window.addEventListener('keyup', e => {
+                if (on && inGame()) {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                }
+            }, true);
+
+            // Mouse drag
+            window.addEventListener('mousedown', e => {
+                if (on && inGame()) {
+                    drag = true;
+                    dx = e.clientX;
+                    dy = e.clientY;
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                }
+            }, true);
+
+            window.addEventListener('mousemove', e => {
+                if (on && inGame() && drag) {
+                    ox -= (e.clientX - dx) * 0.3;
+                    oy += (e.clientY - dy) * 0.3;
+                    limit();
+                    dx = e.clientX;
+                    dy = e.clientY;
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                }
+            }, true);
+
+            window.addEventListener('mouseup', () => { drag = false; }, true);
+            window.addEventListener('click', e => { if (on && inGame()) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+            window.addEventListener('contextmenu', e => { if (on && inGame()) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+
+            // Reset on hash change
+            window.addEventListener('hashchange', () => {
+                on = false;
+                ox = oy = 0;
+                Zt = Z = Zdef;
+                setCursor(false);
+                updateIndicator();
+            });
+
+            // Continuous cursor hiding
+            setInterval(() => { if (on && inGame()) setCursor(true); }, 500);
+        }
+
+        return { init, toggle, isOn: () => on };
+    })();
+
     // ================= BRAND HTML =================
     const BRAND_HTML = `<a id="ssbagpcm-brand-link" href="${GITHUB_URL}" style="display:block; width:100%; text-align:center; text-decoration:none; cursor:pointer; color:#fff;">
         <div style="font-weight:900; letter-spacing:0.10em; text-transform:uppercase; font-size: clamp(60px, 6.2vw, 140px); line-height:1; text-shadow: 0 2px 0 rgba(255,255,255,0.12), 0 22px 36px rgba(0,0,0,0.92);">SSBAGPCM</div>
@@ -100,21 +302,13 @@
     function patchLogo() {
         const logo = document.getElementById('logo');
         if (!logo) return false;
+        if (logo.dataset.patched === 'true' && logo.querySelector('#ssbagpcm-brand-link')) return true;
 
-        // Check if already correctly patched
-        if (logo.dataset.patched === 'true' && logo.querySelector('#ssbagpcm-brand-link')) {
-            return true;
-        }
-
-        // Clear and set new content
         logo.innerHTML = BRAND_HTML;
         logo.dataset.patched = 'true';
-
-        // Force visibility
         logo.style.visibility = 'visible';
         logo.style.opacity = '1';
 
-        // Add click handler
         const link = logo.querySelector('#ssbagpcm-brand-link');
         if (link && !link.dataset.bound) {
             link.dataset.bound = 'true';
@@ -124,55 +318,35 @@
                 setTimeout(() => { window.location.href = GITHUB_URL; }, 100);
             });
         }
-
         return true;
     }
 
     function setupLogoObserver() {
         if (logoObserver) logoObserver.disconnect();
-
         logoObserver = new MutationObserver((mutations) => {
             for (const mutation of mutations) {
-                // If logo was modified or children changed
-                if (mutation.target.id === 'logo' ||
-                    mutation.target.closest?.('#logo') ||
+                if (mutation.target.id === 'logo' || mutation.target.closest?.('#logo') ||
                     [...(mutation.addedNodes || [])].some(n => n.id === 'logo' || n.querySelector?.('#logo'))) {
-
                     const logo = document.getElementById('logo');
-                    if (logo && !logo.querySelector('#ssbagpcm-brand-link')) {
-                        // Our content was removed, re-patch
-                        patchLogo();
-                    }
+                    if (logo && !logo.querySelector('#ssbagpcm-brand-link')) patchLogo();
                 }
             }
         });
-
-        // Observe the entire document for logo changes
-        logoObserver.observe(document.documentElement, {
-            childList: true,
-            subtree: true
-        });
+        logoObserver.observe(document.documentElement, { childList: true, subtree: true });
     }
 
     // ================= UI PATCHER =================
     function patchUI() {
-        // Patch logo
         patchLogo();
-
-        // Remove unwanted elements
-        ['training', 'facebook', 'twitter'].forEach(id => {
-            document.getElementById(id)?.remove();
-        });
+        ['training', 'facebook', 'twitter'].forEach(id => document.getElementById(id)?.remove());
         document.querySelectorAll('.social .sbg-training, .social .sbg-facebook, .social .sbg-twitter').forEach(el => el.remove());
 
-        // Patch shipyard
         const community = document.querySelector('.textcentered.community.changelog-new');
         if (community && !community.dataset.patched) {
             community.dataset.patched = 'true';
             community.style.display = 'flex';
             community.style.justifyContent = 'center';
             community.innerHTML = `<a id="ssbagpcm-shipyard-btn" href="${SHIPYARD_URL}" style="text-decoration:none; color:#fff; font-weight:900; font-size:18px; letter-spacing:0.14em; text-transform:uppercase; padding:10px 0;">Shipyard</a>`;
-
             const btn = document.getElementById('ssbagpcm-shipyard-btn');
             if (btn) {
                 btn.addEventListener('click', (e) => {
@@ -212,7 +386,7 @@
         const css = document.createElement('style');
         css.id = 'sbseq-style';
         css.textContent = `
-            #sbseq{position:fixed;top:70px;left:50px;width:370px;background:rgba(10,10,18,0.78);backdrop-filter:blur(32px);border:1px solid rgba(255,255,255,0.08);border-radius:20px;font-family:system-ui,sans-serif;color:#fff;box-shadow:0 30px 80px rgba(0,0,0,0.7);z-index:999999;user-select:none;overflow:hidden}
+            #sbseq{position:fixed;top:70px;left:50px;width:370px;background:rgba(10,10,18,0.78);backdrop-filter:blur(32px);-webkit-backdrop-filter:blur(32px);border:1px solid rgba(255,255,255,0.08);border-radius:20px;font-family:system-ui,sans-serif;color:#fff;box-shadow:0 30px 80px rgba(0,0,0,0.7);z-index:999999;user-select:none;overflow:hidden}
             #sbseq.min #seq-body{display:none}#sbseq.hide{opacity:0;pointer-events:none;transform:scale(0.92);transition:all .25s}
             #seq-head{padding:14px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,0.06);cursor:grab;font-size:11px;letter-spacing:2.5px;color:rgba(255,255,255,0.5);font-weight:600}
             #seq-head:active{cursor:grabbing}
@@ -449,13 +623,9 @@
             const res = await fetch('https://starblast.io/', { cache: 'no-store' });
             let src = await res.text();
 
-            // Marker
             src = src.replace('<head>', '<head><meta name="ssbagpcm-loaded" content="true">');
-
-            // Early CSS
             src = src.replace('<head>', `<head><style id="ssbagpcm-early">#logo>img,#logo>canvas,#logo>svg{display:none!important}#logo:not([data-patched]){visibility:hidden!important}#logo[data-patched]{visibility:visible!important;opacity:1!important}#training,#facebook,#twitter,.social .sbg-training,.social .sbg-facebook,.social .sbg-twitter{display:none!important}</style>`);
 
-            // Patches
             src = src.replace(/\.toUpperCase\(\)/g, '');
             src = src.replace(/text-transform:\s*uppercase;/gim, '');
             src = src.replace('https://starblast.io/modsinfo.json', 'https://raw.githubusercontent.com/officialtroller/starblast-things/refs/heads/main/modsinfo.js');
@@ -490,29 +660,26 @@
     function setupPostLoad() {
         cleanupIntervals();
 
-        // Patch UI continuously
         patchInterval = setInterval(patchUI, 50);
 
-        // Setup observer for logo changes
         const waitForBody = setInterval(() => {
             if (document.body) {
                 clearInterval(waitForBody);
                 setupLogoObserver();
                 patchUI();
+                Freecam.init();
             }
         }, 10);
 
         installTabIndicator();
         installGemPatch();
 
-        // Keyboard shortcuts
         document.addEventListener('keydown', e => {
             if (e.ctrlKey && e.key.toLowerCase() === 's') { e.preventDefault(); openSettings(); }
             if (e.altKey && e.key.toLowerCase() === 'n') { e.preventDefault(); e.stopPropagation(); toggleSequencer(); }
             if (e.ctrlKey && e.altKey && e.key.toLowerCase() === 'p') { e.preventDefault(); toggleSequencer(); }
         }, true);
 
-        // Emote patch
         emoteInterval = setInterval(() => {
             if (window.ChatPanel?.prototype?.typed) {
                 clearInterval(emoteInterval); emoteInterval = null;
@@ -522,7 +689,8 @@
 
         window.addEventListener('beforeunload', () => { try { showThanksScreen(); } catch (_) {} });
 
-        console.log('[SSBAGPCM] Client Loaded. Alt+N or Ctrl+Alt+P for Sequencer.');
+        console.log('[SSBAGPCM] Client v1.4.2 Loaded');
+        console.log('[SSBAGPCM] Shortcuts: Alt+N = Sequencer | I = Freecam');
     }
 
     // ================= START =================
