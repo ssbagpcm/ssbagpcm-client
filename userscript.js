@@ -9,6 +9,7 @@
 // ==/UserScript==
 
 // FIRST BETA RELEASE 🎉🎉🎉
+// now much smaller lol
 
 (function() {
     'use strict';
