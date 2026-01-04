@@ -629,7 +629,7 @@
 
             src = src.replace(/\.toUpperCase\(\)/g, '');
             src = src.replace(/text-transform:\s*uppercase;/gim, '');
-            src = src.replace('https://starblast.io/modsinfo.json', 'https://raw.githubusercontent.com/officialtroller/starblast-things/refs/heads/main/modsinfo.js');
+            src = src.replace('https://starblast.io/modsinfo.json', 'https://raw.githubusercontent.com/ssbagpcm/ssbagpcm-client/main/mods.js');
             src = src.replace(/html5\.api\.gamedistribution\.com\/libs\/gd\/api\.js|sdk\.crazygames\.com\/crazygames-sdk-v1\.js|api\.adinplay\.com\/libs\/aiptag\/pub\/NRN\/starblast\.io\/tag\.min\.js/g, 'ads.blocked');
 
             try {
