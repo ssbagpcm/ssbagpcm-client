@@ -11,6 +11,7 @@
 // a bit ai generated
 // you get any troubles, dm discord : ssbagpcm
 // client full of bugs for now, good luck
+// do not use while your computer's bluetooth is activated!!!
 
 (function () {
     'use strict';
